@@ -1,0 +1,71 @@
+name: OpenText Fortify AST Scan + UCMDB Update
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  Fortify-AST-Scan:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
+    env:
+      FOD_URL: https://ams.fortify.com          # Not sensitive, never a secret
+      # FoD application:release. Defaults to <owner/repo>:<branch>, matching the
+      # Fortify action's own default. Override with repo variable FOD_RELEASE.
+      FOD_RELEASE: ${{ vars.FOD_RELEASE || format('{0}:{1}', github.repository, github.head_ref || github.ref_name) }}
+
+    steps:
+      - name: Check Out Source Code
+        uses: actions/checkout@v6
+
+      # Matches .tool-versions (temurin 17)
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'maven'
+
+      - name: Run Fortify Scan
+        uses: fortify/github-action@v3
+        env:
+          FOD_TENANT: ${{ secrets.FOD_TENANT }}
+          FOD_USER: ${{ secrets.FOD_USER }}
+          FOD_PASSWORD: ${{ secrets.FOD_PAT }}   # Personal Access Token
+          DO_SCA_SCAN: true                      # Needs SCA (Debricked) entitlement on the tenant
+          DO_AVIATOR_AUDIT: true                 # Needs Aviator entitlement on the tenant
+          # DO_WAIT defaults to true: the step finishes only when the scan has completed,
+          # so the counts read below are from this scan.
+
+      # ---------------------------------------------------------------------
+      # Push results to UCMDB. Only for the default branch (not PRs), and a
+      # CMDB outage shows as a warning rather than failing the build.
+      # ---------------------------------------------------------------------
+      - name: Set up fcli
+        if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
+        uses: fortify/github-action/setup@v3
+        with:
+          fcli: bootstrapped
+
+      - name: Update UCMDB CI with Fortify results
+        if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
+        continue-on-error: true
+        env:
+          FOD_TENANT: ${{ secrets.FOD_TENANT }}
+          FOD_USER: ${{ secrets.FOD_USER }}
+          FOD_PAT: ${{ secrets.FOD_PAT }}
+          UCMDB_URL: ${{ vars.UCMDB_URL || 'https://cms.eu3-smax.saas.microfocus.com' }}
+          UCMDB_CLIENT_CONTEXT: ${{ vars.UCMDB_CLIENT_CONTEXT || '344974513' }}
+          UCMDB_CI_ID: ${{ vars.UCMDB_CI_ID || '4b69e6ca3d3df57dae5f777d4932c26b' }}
+          UCMDB_CI_TYPE: ${{ vars.UCMDB_CI_TYPE || 'infrastructure_service' }}
+          UCMDB_STATUS_CLEAN: ${{ vars.UCMDB_STATUS_CLEAN }}
+          UCMDB_USER: ${{ secrets.UCMDB_USER }}
+          UCMDB_PASSWORD: ${{ secrets.UCMDB_PASSWORD }}
+        run: bash .github/scripts/update-ucmdb.sh
